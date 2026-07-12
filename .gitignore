@@ -216,3 +216,24 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+# === Específico del Proyecto AlimenData ===
+
+# Seguridad: NUNCA subir las credenciales reales
+.env
+.env.local
+
+# Docker: Ignorar archivos temporales de contenedores si se generan localmente
+.docker/
+docker-compose.override.yml
+
+# Base de Datos: Si por error creas una carpeta de datos fuera del volumen
+pg_data/
+postgres_data/
+
+# Sistema Operativo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Alembic: Ignorar solo los archivos compilados, pero MANTENER las versiones
+backend/alembic/__pycache__/
