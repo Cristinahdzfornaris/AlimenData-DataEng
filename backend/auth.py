@@ -9,7 +9,7 @@ from models import Usuario
 import os
 
 # Configuración JWT
-SECRET_KEY = "your-secret-key-change-in-production"  # Debe venir de variables de entorno
+SECRET_KEY = "your-secret-key-change-in-production"  
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
@@ -28,7 +28,7 @@ def get_session() -> Generator[Session, None, None]:
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verificar contraseña de forma segura"""
     try:
-        # Forzamos la verificación
+       
         return pwd_context.verify(plain_password, hashed_password)
     except Exception as e:
         print(f"DEBUG AUTH: Error verificando password: {e}")

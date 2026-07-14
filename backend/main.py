@@ -58,7 +58,6 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), session: Session = D
     """Endpoint de login para obtener token JWT (Insensible a mayúsculas)"""
     repo = UsuarioRepository(session)
     
-    # Buscamos usando el repositorio que ya tiene la lógica de func.lower()
     user = repo.get_by_username(form_data.username)
     
     if not user or not verify_password(form_data.password, user.hashed_password):
@@ -76,7 +75,6 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), session: Session = D
         
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
-        # Usamos siempre el username guardado (en minúsculas) para el token
         data={"sub": user.username}, expires_delta=access_token_expires
     )
     return {"access_token": access_token, "token_type": "bearer"}
@@ -98,7 +96,7 @@ def registrar_usuario(
     username_norm = username.strip().lower()
     email_norm = email.strip().lower()
     
-    # 2. Normalizar nivel de acceso (nacional -> Nacional)
+    # 2. Normalizar nivel de acceso 
     nivel_norm = nivel_acceso.strip().title()
 
     # Verificar si el usuario ya existe
@@ -136,10 +134,47 @@ def registrar_usuario(
     repo_u.create(new_user)
     
     return {"message": "Usuario registrado exitosamente", "username": username_norm}
+
+
+@app.post("/registros/operacion", tags=["CRUD Operativo"])
+def crear_registro(
+    registro: RegistroBalance, 
+    current_user: Usuario = Depends(get_current_user),
+    session: Session = Depends(get_session)
+):
+    if current_user.nivel_acceso not in ["Nacional", "Provincial"]:
+        raise HTTPException(status_code=403, detail="No autorizado")
+    
+    repo = RegistroBalanceRepository(session)
+    return repo.create(registro)
+
+
+@app.get("/analitica/proyecciones/{territorio_id}", tags=["Analítica Avanzada"])
+def obtener_proyeccion_abastecimiento(territorio_id: int, session: Session = Depends(get_session)):
+    """
+    Analítica Avanzada: Predice disponibilidad basada en los últimos 3 años.
+    """
+    statement = (
+        select(RegistroBalance)
+        .where(RegistroBalance.territorio_id == territorio_id)
+        .order_by(RegistroBalance.año.desc()).limit(3)
+    )
+    historico = session.exec(statement).all()
+    
+    if len(historico) < 2:
+        return {"proyeccion": "Insuficiente información histórica"}
+    
+    # Cálculo simple de tendencia (Data Science básico)
+    promedio = sum(r.disponible for r in historico) / len(historico)
+    return {
+        "año_proximo": 2024,
+        "disponibilidad_estimada_tn": round(promedio * 1.03, 2),
+        "nivel_riesgo": "Bajo" if promedio > 500 else "Alto"
+    }
 @app.get("/usuarios/me", tags=["Autenticación"])
 def read_users_me(
     current_user: Usuario = Depends(get_current_user),
-    session: Session = Depends(get_session) # Añadimos la sesión
+    session: Session = Depends(get_session) 
 ):
     """Obtener información completa del usuario actual incluyendo su territorio"""
     nombre_t = None
@@ -155,7 +190,7 @@ def read_users_me(
         "email": current_user.email,
         "nivel_acceso": current_user.nivel_acceso,
         "territorio_id": current_user.territorio_id,
-        "territorio_nombre": nombre_t,  # <--- ESTO ES LO QUE NECESITA EL FRONTEND
+        "territorio_nombre": nombre_t,  
         "activo": current_user.activo
     }
 

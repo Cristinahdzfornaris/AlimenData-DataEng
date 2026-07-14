@@ -2,6 +2,7 @@ from typing import List, Optional
 from sqlmodel import Session, select
 from models import Usuario, Territorio, Producto, RegistroBalance, PoblacionHistorica
 from sqlmodel import Session, select, func
+import unicodedata 
 class BaseRepository:
     """Repositorio base con operaciones CRUD genéricas"""
     
@@ -69,12 +70,21 @@ class TerritorioRepository(BaseRepository):
     def __init__(self, session: Session):
         super().__init__(session, Territorio)
     
-    def get_by_nombre(self, nombre: str) -> Optional[Territorio]:
-        """Búsqueda insensible a mayúsculas"""
+    def get_by_nombre(self, nombre: str):
+        """Busca territorio ignorando tildes, mayúsculas y espacios"""
         if not nombre: return None
-        return self.session.exec(
-            select(Territorio).where(func.lower(Territorio.nombre) == nombre.lower())
-        ).first()
+        
+        todos = self.get_all()
+        
+        def normalizar(t):
+            return ''.join(c for c in unicodedata.normalize('NFD', str(t).lower().strip())
+                          if unicodedata.category(c) != 'Mn').replace("mpio. ", "")
+
+        nombre_buscado = normalizar(nombre)
+        for t in todos:
+            if normalizar(t.nombre) == nombre_buscado:
+                return t
+        return None
     
     def get_by_nivel(self, nivel: str) -> List[Territorio]:
         """Obtener territorios por nivel (Nacional, Provincial, Municipal)"""

@@ -1,77 +1,83 @@
 
+---
+
 # AlimenData Cuba 🇨🇺
-### Sistema Inteligente de Gestión y Distribución Alimentaria
+### Sistema Inteligente de Gestión y Distribución Alimentaria (Fase 3 - Final)
 
+**AlimenData** es una plataforma integral de ingeniería de datos diseñada para la optimización logística, el control de inventarios operativos y el análisis de equidad distributiva en Cuba. El sistema integra datos históricos globales (FAO) con estadísticas demográficas oficiales (ONEI) y permite la gestión de inventarios en tiempo real para el ciclo operativo 2024.
 
+## 🚀 Despliegue Automático (Directriz 3.1)
+El sistema está diseñado bajo principios de **DataOps** para funcionar con un único comando. No se requiere configuración manual de la base de datos ni ejecución externa de scripts.
 
-AlimenData es una plataforma de ingeniería de datos diseñada para la gestión logística y el análisis de equidad distributiva de alimentos en Cuba. Integra datos históricos de la FAO con estadísticas demográficas oficiales de la ONEI (2006-2022).
-
-## 🏗️ Arquitectura del Sistema (Fase 2)
-El proyecto se basa en una arquitectura de **microservicios** desacoplados mediante Docker:
-*   **Backend:** FastAPI con SQLModel (Python). Implementa el **Patrón Repositorio** para aislar la lógica de negocio de la base de datos.
-*   **Frontend:** Dashboard analítico interactivo con Streamlit y Plotly.
-*   **Database:** PostgreSQL 15 con persistencia de volúmenes.
-*   **Seguridad:** Autenticación basada en **JWT (JSON Web Tokens)** y hashing de contraseñas con BCrypt.
-
-## 🚀 Instalación y Despliegue
-
-### 1. Requisitos
-*   Docker y Docker Compose instalados.
-*   Archivo de datos en `data/cuba_fao_data.csv` y `data/3.5-poblacion...xls`.
-
-### 2. Inicio Rápido
 ```bash
-# Levantar la infraestructura
-docker-compose up --build -d
-
-# Aplicar estructura de base de datos (Alembic)
-docker-compose exec backend alembic upgrade head
-
-# Ingestión de datos (ETL) - Ejecutar en este orden
-docker-compose exec backend python scripts/etl_fao.py
-docker-compose exec backend python scripts/etl_poblacion_onei.py
+# Iniciar todo el ecosistema (Migraciones + ETL + API + Dashboard)
+docker-compose up --build
 ```
-
-## 🔐 Control de Acceso (RBAC)
-El sistema gestiona la visibilidad de los datos según el perfil del usuario:
-*   **Nivel Nacional:** Acceso total a todas las provincias, municipios y comparativas de equidad país.
-*   **Nivel Provincial:** Acceso restringido únicamente a los datos de su provincia y municipios subordinados (Principio de Privilegio Mínimo).
-*   **Nivel Municipal:** Visualización exclusiva de los indicadores del punto de venta local.
-
-## 📊 Capacidades Analíticas
-*   **Indicador de Equidad:** Cálculo automático de Kg por habitante al año mediante ingestión cruzada de fuentes FAO/ONEI.
-*   **Series Temporales:** Evolución de mermas y disponibilidad durante 15 años.
-*   **Matrices de Riesgo:** Mapas de calor para detectar años e hitos críticos en la distribución.
-*   **Drill-down:** Navegación desde el balance provincial hasta el detalle municipal.
-
-## 📁 Estructura del Proyecto
-```text
-AlimenData/
-├── backend/
-│   ├── alembic/            # Versiones y migraciones DB
-│   ├── scripts/            # Pipelines ETL (FAO y ONEI)
-│   ├── auth.py             # Lógica de Seguridad JWT
-│   ├── main.py             # Endpoints de la API REST
-│   ├── models.py           # Modelos de Datos (SQLModel)
-│   └── repositories.py     # Capa de Persistencia (Pattern)
-├── frontend/
-│   └── app.py              # Dashboard Streamlit
-├── data/                   # Datasets CSV y Excel
-└── docker-compose.yml      # Orquestador de contenedores
-```
-
-## 🛠️ Tecnologías Utilizadas
-*   **Lenguaje:** Python 3.10
-*   **Persistencia:** SQLModel, Alembic, PostgreSQL.
-*   **ETL:** Pandas, Numpy, Unicodedata.
-*   **API:** FastAPI, Jose (JWT), Passlib.
-*   **Visualización:** Plotly Express.
 
 ---
 
-### Notas de Ingeniería:
-- **Idempotencia:** Los scripts ETL detectan datos existentes para evitar duplicados en ejecuciones repetidas.
-- **Normalización:** El sistema es insensible a mayúsculas, tildes y espacios en el registro y búsqueda de territorios.
-- **Schema Evolution:** El modelo de territorios incluye perfiles logísticos (Almacén Central / Punto de Venta) según los requerimientos de la Fase 1.
+## 🏗️ Arquitectura de Microservicios
+La solución se estructura en tres contenedores independientes y desacoplados:
+
+1.  **Backend (FastAPI + SQLModel):** API REST protegida que gestiona la lógica de negocio y la capa de persistencia.
+2.  **Frontend (Streamlit):** Interfaz de Business Intelligence con soporte para operaciones CRUD.
+3.  **Database (PostgreSQL 15):** Motor relacional con integridad transaccional (ACID).
+
+---
+
+## 🛠️ Cumplimiento de Directrices de Ingeniería
+
+### 1. Persistencia y Seguridad (Fase 1 y 2)
+*   **Prohibición de SQL Nativo:** Se implementó **SQLModel** como ORM. No existe rastro de SQL embebido en el código.
+*   **Patrón Repositorio:** Se aisló completamente la lógica de la base de datos en una capa de persistencia (`repositories.py`), garantizando un código limpio y mantenible.
+*   **Control de Versiones DB:** Gestión estricta mediante **Alembic**. Todo el esquema se construye a partir de archivos de migración versionados.
+*   **Seguridad:** Autenticación mediante **JWT (JSON Web Tokens)** y almacenamiento de credenciales con hashing de alta seguridad (**BCrypt**).
+
+### 2. Integración y Equidad (Fase 2)
+*   **Ingestión Cruzada (FAO + ONEI):** El sistema realiza un "join" lógico entre los balances alimentarios y la población residente oficial por municipio (Serie 2006-2022).
+*   **Indicador de Equidad:** Se calcula automáticamente el **Consumo Per Cápita (Kg/persona/año)**, permitiendo identificar brechas distributivas territoriales.
+
+### 3. DataOps y Operatividad (Fase 3)
+*   **Despliegue Idempotente:** El script `start.sh` automatiza las migraciones y la carga de datos inicial solo si la base de datos está vacía, evitando duplicidad de información.
+*   **CRUD Interactivo:** Los administradores pueden registrar entradas físicas y mermas para el año **2024**, permitiendo una analítica que combina el histórico con la operación actual.
+*   **RBAC (Control de Acceso Territorial):** 
+    *   **Nacional:** Visión macro y estratégica de todo el país.
+    *   **Provincial:** Gestión exclusiva de su Almacén Central y red de municipios subordinados.
+
+---
+
+## 📊 Capacidades del Dashboard
+*   **Mapas de Calor:** Identificación de años críticos y zonas con mayores pérdidas.
+*   **Tendencias de 15 años:** Evolución temporal de 20 productos clave.
+*   **Gestión Operativa:** Formulario para registro manual de movimientos de almacén.
+*   **KPIs en Tiempo Real:** Visualización instantánea de disponibilidad y ratios de pérdida.
+
+---
+
+## 📁 Estructura del Repositorio
+```text
+AlimenData-Cuba/
+├── backend/
+│   ├── alembic/            # Historial de migraciones (ADN de la DB)
+│   ├── scripts/            # Pipelines ETL (FAO y ONEI)
+│   ├── auth.py             # Motor de seguridad JWT
+│   ├── main.py             # Endpoints y lógica de API
+│   ├── models.py           # Modelos de datos estructurados
+│   ├── repositories.py     # Capa de persistencia (Pattern)
+│   └── start.sh            # Receta de automatización DataOps
+├── frontend/
+│   └── app.py              # Interfaz de usuario y analítica
+├── data/                   # Semillas de datos (FAO/ONEI)
+├── .env.example            # Plantilla para variables de entorno
+└── docker-compose.yml      # Orquestador de la infraestructura
+```
+
+---
+
+## ⚙️ Configuración (Variables de Entorno)
+Para el despliegue, el sistema utiliza un archivo `.env` (parametrizado fuera del código):
+*   `DATABASE_URL`: Conexión segura a PostgreSQL.
+*   `SECRET_KEY`: Clave maestra para la firma de tokens JWT.
+*   `DB_USER/DB_PASSWORD`: Credenciales de acceso al motor.
 
 ---

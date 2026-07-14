@@ -188,7 +188,15 @@ if not st.session_state.token:
     st.stop()
 
 
+prods_raw = safe_get(f"{API}/productos")
+def get_raw_data(url):
+    r = requests.get(url, headers=get_auth_header())
+    return r.json() if r.status_code == 200 else []
 
+# Cargamos la lista completa (dicts con id y nombre)
+productos_full = get_raw_data(f"{API}/productos")
+# Creamos la lista de solo nombres para el selectbox
+lista_nombres_productos = [p['nombre'] for p in productos_full]
 # ==========================================================
 # USUARIO
 # ==========================================================
@@ -278,18 +286,11 @@ elif nivel_usuario=="Provincial":
 
 elif nivel_usuario=="Municipal":
 
-
-    # La provincia se obtiene después
-    # desde el municipio
-
     provincias=[]
 
 else:
 
     provincias=[]
-
-
-
 
 # ==========================================================
 # MUNICIPIOS
@@ -778,3 +779,55 @@ else:
     st.info(
         "💡 Utilice la barra lateral para seleccionar territorios y generar el análisis."
     )
+
+# --- FASE 3: CRUD OPERATIVO ---
+
+with st.expander("📝 Panel de Registro Operativo"):
+    if user['nivel_acceso'] in ["Nacional", "Provincial"]:
+        with st.form("crud_almacen"):
+            st.write("### Nueva entrada de Inventario / Merma")
+            c1, c2 = st.columns(2)
+            
+            # 1. Selección de Territorio (Solo para Nacionales)
+            if user['nivel_acceso'] == "Nacional":
+                # El admin nacional elige el almacén (provincia)
+                todas_provs_nombres = safe_get(f"{API}/territorios/lista/Provincial")
+                t_nom_reg = c1.selectbox("Seleccionar Almacén de Destino", todas_provs_nombres)
+                res_t = requests.get(f"{API}/territorios", headers=get_auth_header()).json()
+                target_id = next((t['id'] for t in res_t if t['nombre'] == t_nom_reg), 1)
+            else:
+                target_id = user['territorio_id']
+                st.info(f"Registrando en su almacén: {user['territorio_nombre']}")
+
+            # 2. Selección de Producto
+            p_nom = c2.selectbox("Producto", lista_nombres_productos)
+            p_id = next((p['id'] for p in productos_full if p['nombre'] == p_nom), 1)
+            
+            # 3. Cantidad y Tipo
+            cant = c1.number_input("Cantidad (tn)", min_value=0.1)
+            tipo = c2.radio("Tipo de Operación", ["Entrada de Inventario", "Merma/Pérdida"])
+            
+            if st.form_submit_button("💾 Confirmar y Guardar"):
+                # Verificamos que el ID no sea nulo antes de enviar
+                if target_id is None:
+                    st.error("Error: No se pudo determinar el ID del territorio.")
+                else:
+                    nuevo_dato = {
+                        "año": 2024,
+                        "producto_id": p_id,
+                        "territorio_id": target_id,
+                        "disponible": cant if tipo == "Entrada de Inventario" else 0,
+                        "mermas": cant if tipo == "Merma/Pérdida" else 0,
+                        "importacion": 0.0,
+                        "consumo_per_capita": 0.0
+                    }
+                    
+                    res = requests.post(f"{API}/registros/operacion", json=nuevo_dato, headers=get_auth_header())
+                    
+                    if res.status_code == 200:
+                        st.success(f"✅ ¡ÉXITO! Se guardó el registro en la base de datos.")
+                        st.balloons()
+                    else:
+                        st.error(f"❌ Error del servidor: {res.text}")
+    else:
+        st.warning("Su perfil no tiene permisos de escritura.")
