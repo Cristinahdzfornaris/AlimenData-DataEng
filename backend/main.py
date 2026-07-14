@@ -1,13 +1,23 @@
 import os
 import sys
 from typing import List, Optional
+from datetime import timedelta
 
-
-from fastapi import FastAPI, Depends, HTTPException, Query
+from fastapi import FastAPI, Depends, HTTPException, Query, status
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlmodel import Session, create_engine, select, func, SQLModel
 
-
-from models import RegistroBalance, Producto, Territorio
+from models import RegistroBalance, Producto, Territorio, Usuario, PoblacionHistorica
+from auth import (
+    verify_password, get_password_hash, create_access_token,
+    get_current_user, check_access_level, ACCESS_TOKEN_EXPIRE_MINUTES
+)
+from repositories import (
+    TerritorioRepository, 
+    ProductoRepository, 
+    UsuarioRepository, 
+    RegistroBalanceRepository
+)
 
 # =================================================================
 # 1. CONFIGURACIÓN DE SEGURIDAD Y BASE DE DATOS 
@@ -40,7 +50,117 @@ def get_session():
         yield session
 
 # =================================================================
-# 3. ENDPOINTS DE LA API (Fase 1: Analítica e Ingestión)
+# 3. ENDPOINTS DE AUTENTICACIÓN (Fase 2)
+# =================================================================
+
+@app.post("/token", tags=["Autenticación"])
+def login(form_data: OAuth2PasswordRequestForm = Depends(), session: Session = Depends(get_session)):
+    """Endpoint de login para obtener token JWT (Insensible a mayúsculas)"""
+    repo = UsuarioRepository(session)
+    
+    # Buscamos usando el repositorio que ya tiene la lógica de func.lower()
+    user = repo.get_by_username(form_data.username)
+    
+    if not user or not verify_password(form_data.password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Usuario o contraseña incorrectos",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    if not user.activo:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Usuario desactivado"
+        )
+        
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        # Usamos siempre el username guardado (en minúsculas) para el token
+        data={"sub": user.username}, expires_delta=access_token_expires
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
+
+@app.post("/usuarios/registro", tags=["Autenticación"])
+def registrar_usuario(
+    username: str,
+    email: str,
+    password: str,
+    nivel_acceso: str,
+    territorio_nombre: Optional[str] = None,
+    session: Session = Depends(get_session)
+):
+    """Endpoint de registro de nuevos usuarios (Normalización automática)"""
+    repo_u = UsuarioRepository(session)
+    repo_t = TerritorioRepository(session)
+
+    # 1. Normalizar credenciales a minúsculas
+    username_norm = username.strip().lower()
+    email_norm = email.strip().lower()
+    
+    # 2. Normalizar nivel de acceso (nacional -> Nacional)
+    nivel_norm = nivel_acceso.strip().title()
+
+    # Verificar si el usuario ya existe
+    if repo_u.get_by_username(username_norm):
+        raise HTTPException(status_code=400, detail="El nombre de usuario ya existe")
+    
+    if repo_u.get_by_email(email_norm):
+        raise HTTPException(status_code=400, detail="El email ya está registrado")
+    
+    if nivel_norm not in ["Nacional", "Provincial", "Municipal"]:
+        raise HTTPException(status_code=400, detail="Nivel de acceso inválido")
+    
+    # 3. Obtener territorio con búsqueda insensible a mayúsculas
+    territorio_id = None
+    if nivel_norm in ["Provincial", "Municipal"]:
+        if not territorio_nombre:
+             raise HTTPException(status_code=400, detail="Debe especificar un territorio para este nivel")
+        
+        t = repo_t.get_by_nombre(territorio_nombre)
+        if t:
+            territorio_id = t.id
+        else:
+            raise HTTPException(status_code=400, detail=f"Territorio '{territorio_nombre}' no encontrado")
+    
+    # 4. Crear usuario con datos normalizados
+    hashed_password = get_password_hash(password)
+    new_user = Usuario(
+        username=username_norm,
+        email=email_norm,
+        hashed_password=hashed_password,
+        nivel_acceso=nivel_norm,
+        territorio_id=territorio_id
+    )
+    
+    repo_u.create(new_user)
+    
+    return {"message": "Usuario registrado exitosamente", "username": username_norm}
+@app.get("/usuarios/me", tags=["Autenticación"])
+def read_users_me(
+    current_user: Usuario = Depends(get_current_user),
+    session: Session = Depends(get_session) # Añadimos la sesión
+):
+    """Obtener información completa del usuario actual incluyendo su territorio"""
+    nombre_t = None
+    
+    # Si el usuario tiene un territorio asignado, buscamos su nombre
+    if current_user.territorio_id:
+        territorio = session.get(Territorio, current_user.territorio_id)
+        if territorio:
+            nombre_t = territorio.nombre
+
+    return {
+        "username": current_user.username,
+        "email": current_user.email,
+        "nivel_acceso": current_user.nivel_acceso,
+        "territorio_id": current_user.territorio_id,
+        "territorio_nombre": nombre_t,  # <--- ESTO ES LO QUE NECESITA EL FRONTEND
+        "activo": current_user.activo
+    }
+
+# =================================================================
+# 4. ENDPOINTS DE LA API (Fase 1: Analítica e Ingestión)
 # =================================================================
 
 
@@ -54,14 +174,56 @@ def health_check():
     }
 
 @app.get("/territorios", response_model=List[Territorio], tags=["Territorios"])
-def listar_territorios(session: Session = Depends(get_session)):
-    """Lista la jerarquía territorial de Cuba cargada."""
-    return session.exec(select(Territorio)).all()
+def listar_territorios(
+    current_user: Usuario = Depends(get_current_user),
+    session: Session = Depends(get_session)
+):
+    """
+    Devuelve territorios según el nivel de acceso del usuario.
+    """
+
+    # Usuario nacional ve todo
+    if current_user.nivel_acceso == "Nacional":
+
+        return session.exec(
+            select(Territorio)
+        ).all()
+
+
+    # Usuario provincial ve su provincia y municipios hijos
+    elif current_user.nivel_acceso == "Provincial":
+
+        territorios = session.exec(
+            select(Territorio)
+            .where(
+                (Territorio.id == current_user.territorio_id) |
+                (Territorio.padre_id == current_user.territorio_id)
+            )
+        ).all()
+
+        return territorios
+
+
+    # Usuario municipal solo ve su municipio
+    elif current_user.nivel_acceso == "Municipal":
+
+        territorio = session.get(
+            Territorio,
+            current_user.territorio_id
+        )
+
+        if territorio:
+            return [territorio]
+
+        return []
+
+
+    return []
 
 @app.get("/productos", response_model=List[Producto], tags=["Productos"])
 def listar_productos(session: Session = Depends(get_session)):
-    """Lista el catálogo de productos disponibles."""
-    return session.exec(select(Producto)).all()
+    repo = ProductoRepository(session)
+    return repo.get_all()
 
 @app.get("/analitica/estado-critico", tags=["Analítica"])
 def obtener_estado_critico(session: Session = Depends(get_session)):
@@ -132,48 +294,96 @@ def obtener_estado_critico_producto(
     
     return reporte
 
-@app.get("/analitica/municipios-provincia", tags=["Analítica"])
+@app.get("/analitica/municipios-provincia")
 def obtener_municipios_provincia(
-    provincia_nombre: str,
-    session: Session = Depends(get_session)
+    provincia_nombre:str,
+    producto_nombre:str="Todos",
+    session:Session=Depends(get_session)
 ):
-    """
-    Desglose de mermas por municipio para una provincia específica.
-    """
-    # Obtener el ID de la provincia
-    provincia = session.exec(select(Territorio).where(Territorio.nombre == provincia_nombre).where(Territorio.nivel == "Provincial")).first()
-    
+
+    provincia=session.exec(
+
+        select(Territorio)
+
+        .where(Territorio.nombre==provincia_nombre)
+
+        .where(Territorio.nivel=="Provincial")
+
+    ).first()
+
     if not provincia:
-        raise HTTPException(status_code=404, detail="Provincia no encontrada")
-    
-    # Consultar municipios de esa provincia
-    statement = (
+
+        raise HTTPException(404)
+
+    statement=(
+
         select(
-            Territorio.nombre.label("municipio"),
-            func.sum(RegistroBalance.mermas).label("mermas_acumuladas"),
-            func.sum(RegistroBalance.disponible).label("disponibilidad_total")
+
+            Territorio.nombre,
+
+            func.sum(RegistroBalance.disponible),
+
+            func.sum(RegistroBalance.mermas)
+
         )
-        .join(RegistroBalance, Territorio.id == RegistroBalance.territorio_id)
-        .where(Territorio.nivel == "Municipal")
-        .where(Territorio.padre_id == provincia.id)
-        .group_by(Territorio.nombre)
+
+        .join(
+            RegistroBalance,
+            Territorio.id==RegistroBalance.territorio_id
+        )
+
+        .where(Territorio.padre_id==provincia.id)
+
+        .where(Territorio.nivel=="Municipal")
+
     )
-    
-    results = session.exec(statement).all()
-    
-    reporte = []
-    for res in results:
-        ratio = (res.mermas_acumuladas / res.disponibilidad_total) if res.disponibilidad_total > 0 else 0
-        
-        reporte.append({
-            "municipio": res.municipio,
-            "mermas_tn": round(res.mermas_acumuladas, 2),
-            "disponible_tn": round(res.disponibilidad_total, 2),
-            "ratio_perdida": f"{round(ratio * 100, 2)}%",
-            "estado": "CRÍTICO" if ratio > 0.15 else "ESTABLE"
+
+    if producto_nombre!="Todos":
+
+        statement=(
+
+            statement
+
+            .join(
+                Producto,
+                Producto.id==RegistroBalance.producto_id
+            )
+
+            .where(
+                Producto.nombre==producto_nombre
+            )
+
+        )
+
+    statement=statement.group_by(Territorio.nombre)
+
+    datos=session.exec(statement).all()
+
+    respuesta=[]
+
+    for r in datos:
+
+        ratio=0
+
+        if r[1]>0:
+
+            ratio=r[2]/r[1]
+
+        respuesta.append({
+
+            "municipio":r[0],
+
+            "disponible_tn":round(r[1],2),
+
+            "mermas_tn":round(r[2],2),
+
+            "ratio_perdida":round(ratio*100,2),
+
+            "estado":"CRÍTICO" if ratio>0.15 else "ESTABLE"
+
         })
-    
-    return reporte
+
+    return respuesta
 
 @app.get("/analitica/historico-serie", tags=["Analítica"])
 def obtener_serie_temporal(
@@ -194,18 +404,47 @@ def obtener_serie_temporal(
     
     return session.exec(statement).all()
 
-@app.get("/territorios/lista/{nivel}", tags=["Territorios"])
-def obtener_lista_por_nivel(nivel: str, padre_nombre: Optional[str] = None, session: Session = Depends(get_session)):
-    """Devuelve nombres de territorios según nivel (Provincial/Municipal)."""
-    statement = select(Territorio).where(Territorio.nivel == nivel)
-    if padre_nombre:
-        
-        padre = session.exec(select(Territorio).where(Territorio.nombre == padre_nombre)).first()
-        if padre:
-            statement = statement.where(Territorio.padre_id == padre.id)
-    
-    results = session.exec(statement).all()
-    return [t.nombre for t in results]
+@app.get("/territorios/lista/{nivel}")
+def obtener_lista_por_nivel(
+    nivel: str,
+    padre_nombre: Optional[str] = None,
+    current_user: Usuario = Depends(get_current_user),
+    session: Session = Depends(get_session)
+):
+
+    repo = TerritorioRepository(session)
+
+
+    # MUNICIPAL
+    if current_user.nivel_acceso == "Municipal":
+
+        territorio = session.get(
+            Territorio,
+            current_user.territorio_id
+        )
+
+        return [territorio] if territorio else []
+
+
+    # PROVINCIAL
+    if current_user.nivel_acceso == "Provincial":
+
+        if nivel == "Municipal":
+
+            return repo.get_by_padre(
+                current_user.territorio_id
+            )
+
+        return [
+            session.get(
+                Territorio,
+                current_user.territorio_id
+            )
+        ]
+
+
+    # NACIONAL
+    return repo.get_by_nivel(nivel)
 @app.get("/territorios/municipios/{provincia_nombre}", tags=["Territorios"])
 def obtener_nombres_municipios(provincia_nombre: str, session: Session = Depends(get_session)):
     """Devuelve la lista de nombres de municipios de una provincia específica."""
@@ -254,6 +493,64 @@ def obtener_series_comparadas(
     
     return [{"año": r.año, "territorio": r.territorio, "mermas": r.mermas} for r in results]
 
+
+@app.get("/analitica/municipio-individual")
+def obtener_municipio_individual(
+    territorio_id:int,
+    producto_nombre:str="Todos",
+    session:Session=Depends(get_session)
+):
+
+
+    statement = (
+        select(
+            Territorio.nombre,
+            func.sum(RegistroBalance.disponible).label("disponible"),
+            func.sum(RegistroBalance.mermas).label("mermas")
+        )
+        .join(
+            RegistroBalance,
+            Territorio.id==RegistroBalance.territorio_id
+        )
+        .where(
+            Territorio.id==territorio_id
+        )
+        .where(
+            Territorio.nivel=="Municipal"
+        )
+    )
+
+
+    if producto_nombre!="Todos":
+
+        statement = (
+            statement
+            .join(
+                Producto,
+                Producto.id==RegistroBalance.producto_id
+            )
+            .where(
+                Producto.nombre==producto_nombre
+            )
+        )
+
+
+    statement = statement.group_by(
+        Territorio.nombre
+    )
+
+
+    resultado=session.exec(statement).all()
+
+
+    return [
+        {
+            "municipio":r[0],
+            "disponible_tn":round(r[1],2),
+            "mermas_tn":round(r[2],2)
+        }
+        for r in resultado
+    ]
 # =================================================================
 # 4. MANEJO DE ERRORES GLOBALES
 # =================================================================

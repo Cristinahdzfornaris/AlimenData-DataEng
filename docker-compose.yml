@@ -23,6 +23,7 @@ services:
       DATABASE_URL: ${DATABASE_URL}
     volumes:
       - ./data:/data
+      - ./backend:/app
     ports:
       - "8000:8000"
     depends_on:
@@ -30,6 +31,8 @@ services:
         condition: service_healthy
     networks:
       - alimen_network
+
+
 
   frontend:
     build: ./frontend
